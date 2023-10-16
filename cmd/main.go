@@ -106,11 +106,13 @@ func processOrders(db *sqlx.DB, orderNumbers []string) {
         product_shelves ps
     JOIN 
         shelves s ON ps.shelf_id = s.id;
+	WHERE 
+        ps.product_id = ANY($1);
 	`
 
 	// Выполнение запроса и сохранение результатов в shelves
 	var shelves []ShelfData
-	err = db.Select(&shelves, shelfQuery)
+	err = db.Select(&shelves, shelfQuery, pq.Array(uniqueProductIDs))
 	if err != nil {
 		panic(err)
 	}
