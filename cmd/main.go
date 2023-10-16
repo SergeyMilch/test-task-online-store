@@ -31,16 +31,14 @@ type AdditionalShelvesResult struct {
 
 func processOrders(db *sqlx.DB, orderNumbers []string) {
 
-	// Запрос для получения ID заказов
-	orderIDQuery := `SELECT id FROM orders WHERE order_number = ANY($1)`
-	var orderIDs []int
-	err := db.Select(&orderIDs, orderIDQuery, pq.Array(orderNumbers))
+	// Подготавливаем запросы
+	orderIDStmt, err := db.Preparex(`SELECT id FROM orders WHERE order_number = ANY($1)`)
 	if err != nil {
 		panic(err)
 	}
+	defer orderIDStmt.Close()
 
-	// Запрос для получения информации о товарах и основных стеллажах
-	productQuery := `
+	productQueryStmt, err := db.Preparex(`
 		SELECT 
 			o.order_number,
 			p.name AS product_name,
@@ -60,15 +58,13 @@ func processOrders(db *sqlx.DB, orderNumbers []string) {
 			s.id = ps.shelf_id AND
 			ps.is_main = TRUE AND
 			o.id = ANY($1)
-	`
-	var orderItems []OrderItem
-	err = db.Select(&orderItems, productQuery, pq.Array(orderIDs))
+	`)
 	if err != nil {
 		panic(err)
 	}
+	defer productQueryStmt.Close()
 
-	// Запрос для получения информации о дополнительных стеллажах
-	additionalShelvesQuery := `
+	additionalShelvesQueryStmt, err := db.Preparex(`
 		SELECT 
 			ps.product_id,
 			array_agg(s.name ORDER BY s.name) AS additional_shelves
@@ -81,9 +77,27 @@ func processOrders(db *sqlx.DB, orderNumbers []string) {
 			ps.product_id = ANY($1)
 		GROUP BY
 			ps.product_id
-	`
+	`)
+	if err != nil {
+		panic(err)
+	}
+	defer additionalShelvesQueryStmt.Close()
+
+	// Выполняем запросы
+	var orderIDs []int
+	err = orderIDStmt.Select(&orderIDs, pq.Array(orderNumbers))
+	if err != nil {
+		panic(err)
+	}
+
+	var orderItems []OrderItem
+	err = productQueryStmt.Select(&orderItems, pq.Array(orderIDs))
+	if err != nil {
+		panic(err)
+	}
+
 	var additionalShelvesResults []AdditionalShelvesResult
-	err = db.Select(&additionalShelvesResults, additionalShelvesQuery, pq.Array(orderIDs))
+	err = additionalShelvesQueryStmt.Select(&additionalShelvesResults, pq.Array(orderIDs))
 	if err != nil {
 		panic(err)
 	}
