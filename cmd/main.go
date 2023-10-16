@@ -69,13 +69,23 @@ func processOrders(db *sqlx.DB, orderNumbers []string) {
 		panic(err)
 	}
 
+	// Выбираем product_id только те, которые в заказе
+	var uniqueProductIDs []int
+	productIDSet := make(map[int]struct{}) // Используется для устранения дубликатов
+	for _, item := range orderItems {
+		if _, exists := productIDSet[item.ProductID]; !exists {
+			uniqueProductIDs = append(uniqueProductIDs, item.ProductID)
+			productIDSet[item.ProductID] = struct{}{}
+		}
+	}
+
 	// Получение информации о товарах
-	productQuery := `SELECT id, name FROM products`
+	productQuery := `SELECT id, name FROM products WHERE id = ANY($1)`
 	var products []struct {
 		ID   int    `db:"id"`
 		Name string `db:"name"`
 	}
-	err = db.Select(&products, productQuery)
+	err = db.Select(&products, productQuery, pq.Array(uniqueProductIDs))
 	if err != nil {
 		panic(err)
 	}
