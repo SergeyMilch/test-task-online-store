@@ -105,7 +105,7 @@ func processOrders(db *sqlx.DB, orderNumbers []string) {
     FROM 
         product_shelves ps
     JOIN 
-        shelves s ON ps.shelf_id = s.id;
+        shelves s ON ps.shelf_id = s.id
 	WHERE 
         ps.product_id = ANY($1);
 	`
@@ -119,23 +119,24 @@ func processOrders(db *sqlx.DB, orderNumbers []string) {
 
 	// Создание карты для хранения информации о стеллажах для каждого продукта
 	shelfInfoMap := make(map[int]ShelfInfo)
-	additionalShelvesMap := make(map[int][]string) // карта для хранения дополнительных стеллажей
 
 	for _, shelf := range shelves {
+		shelfInfo, exists := shelfInfoMap[shelf.ProductID]
+		if !exists {
+			// Если информации о стеллажах для этого продукта еще нет, создаем новую структуру ShelfInfo
+			shelfInfo = ShelfInfo{}
+		}
+
 		if shelf.IsMain {
-			// Если это основной стеллаж, сохраняем его имя в карту
-			shelfInfoMap[shelf.ProductID] = ShelfInfo{ShelfName: shelf.ShelfName}
+			// Если это основной стеллаж, сохраняем его имя в структуре
+			shelfInfo.ShelfName = shelf.ShelfName
 		} else {
 			// Если это дополнительный стеллаж, добавляем его имя в список дополнительных стеллажей
-			additionalShelvesMap[shelf.ProductID] = append(additionalShelvesMap[shelf.ProductID], shelf.ShelfName)
+			shelfInfo.AdditionalShelves = append(shelfInfo.AdditionalShelves, shelf.ShelfName)
 		}
-	}
 
-	// Объединение информации о дополнительных стеллажах с основной информацией о стеллажах
-	for productID, additionalShelves := range additionalShelvesMap {
-		shelfInfo := shelfInfoMap[productID]
-		shelfInfo.AdditionalShelves = additionalShelves
-		shelfInfoMap[productID] = shelfInfo
+		// Обновляем информацию о стеллажах для этого продукта в карте
+		shelfInfoMap[shelf.ProductID] = shelfInfo
 	}
 
 	// Вывод результата
