@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -23,74 +24,105 @@ type OrderItem struct {
 	AdditionalShelves StringArray `db:"additional_shelves"`
 }
 
-func processOrders(db *sqlx.DB, orderNumbers []string) {
-	query := `
-    WITH order_data AS (
-        SELECT 
-            o.order_number,
-            p.name AS product_name,
-            p.id AS product_id,  -- здесь явно указываем, что имеем в виду p.id
-            oi.quantity,
-            s.name AS shelf_name,
-            ps.is_main
-        FROM 
-            order_items oi
-        JOIN 
-            orders o ON o.id = oi.order_id
-        JOIN 
-            products p ON p.id = oi.product_id
-        JOIN 
-            product_shelves ps ON ps.product_id = p.id  -- и здесь тоже явно указываем, что имеем в виду p.id
-        JOIN 
-            shelves s ON s.id = ps.shelf_id
-        WHERE 
-            o.order_number = ANY($1)
-        AND 
-            ps.is_main = TRUE
-    )
-    SELECT
-        order_number,
-        product_name,
-        od.product_id,  -- и здесь тоже явно указываем, что имеем в виду od.product_id
-        quantity,
-        shelf_name,
-        array_agg(s.name ORDER BY s.name) AS additional_shelves
-    FROM
-        order_data od
-    LEFT JOIN 
-        product_shelves ps ON ps.product_id = od.product_id  -- и здесь тоже явно указываем, что имеем в виду od.product_id
-    LEFT JOIN
-        shelves s ON s.id = ps.shelf_id
-    GROUP BY
-        order_number, product_name, od.product_id, quantity, shelf_name  -- и здесь тоже явно указываем, что имеем в виду od.product_id
-    ORDER BY 
-        shelf_name, product_name, order_number;
-`
+type AdditionalShelvesResult struct {
+	ProductID         int         `db:"product_id"`
+	AdditionalShelves StringArray `db:"additional_shelves"`
+}
 
-	var orderItems []OrderItem
-	err := db.Select(&orderItems, query, pq.Array(orderNumbers))
+func processOrders(db *sqlx.DB, orderNumbers []string) {
+
+	// Запрос для получения ID заказов
+	orderIDQuery := `SELECT id FROM orders WHERE order_number = ANY($1)`
+	var orderIDs []int
+	err := db.Select(&orderIDs, orderIDQuery, pq.Array(orderNumbers))
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println("=+=+=+=")
-	fmt.Printf("Страница сборки заказов %s\n\n", strings.Join(orderNumbers, ","))
+	// Запрос для получения информации о товарах и основных стеллажах
+	productQuery := `
+		SELECT 
+			o.order_number,
+			p.name AS product_name,
+			p.id AS product_id,
+			oi.quantity,
+			s.name AS shelf_name
+		FROM 
+			order_items oi,
+			orders o,
+			products p,
+			product_shelves ps,
+			shelves s
+		WHERE 
+			o.id = oi.order_id AND
+			p.id = oi.product_id AND
+			ps.product_id = p.id AND
+			s.id = ps.shelf_id AND
+			ps.is_main = TRUE AND
+			o.id = ANY($1)
+	`
+	var orderItems []OrderItem
+	err = db.Select(&orderItems, productQuery, pq.Array(orderIDs))
+	if err != nil {
+		panic(err)
+	}
+
+	// Запрос для получения информации о дополнительных стеллажах
+	additionalShelvesQuery := `
+		SELECT 
+			ps.product_id,
+			array_agg(s.name ORDER BY s.name) AS additional_shelves
+		FROM
+			product_shelves ps,
+			shelves s
+		WHERE 
+			s.id = ps.shelf_id AND
+			ps.is_main = FALSE AND
+			ps.product_id = ANY($1)
+		GROUP BY
+			ps.product_id
+	`
+	var additionalShelvesResults []AdditionalShelvesResult
+	err = db.Select(&additionalShelvesResults, additionalShelvesQuery, pq.Array(orderIDs))
+	if err != nil {
+		panic(err)
+	}
+
+	// Заполнение additionalShelvesMap
+	additionalShelvesMap := make(map[int]StringArray)
+	for _, result := range additionalShelvesResults {
+		additionalShelvesMap[result.ProductID] = result.AdditionalShelves
+	}
+
+	// Обновление информации о дополнительных стеллажах в orderItems
+	for i, item := range orderItems {
+		orderItems[i].AdditionalShelves = additionalShelvesMap[item.ProductID]
+	}
+
+	// Вывод результатов
+	var buffer bytes.Buffer
+
+	buffer.WriteString("=+=+=+=\n")
+	buffer.WriteString(fmt.Sprintf("Страница сборки заказов %s\n\n", strings.Join(orderNumbers, ",")))
 
 	currentShelf := ""
 	for _, item := range orderItems {
 		if currentShelf != item.ShelfName {
 			if currentShelf != "" {
-				fmt.Println()
+				buffer.WriteString("\n")
 			}
-			fmt.Printf("===Стеллаж %s", item.ShelfName)
+			buffer.WriteString(fmt.Sprintf("===Стеллаж %s", item.ShelfName))
 			currentShelf = item.ShelfName
 		}
 		additionalShelfInfo := ""
 		if len(item.AdditionalShelves) > 0 {
 			additionalShelfInfo = fmt.Sprintf("\nдоп стеллаж: %s", strings.Join(item.AdditionalShelves, ","))
 		}
-		fmt.Printf("\n%s (id=%d)\nзаказ %d, %d шт %s\n", item.ProductName, item.ProductID, item.OrderNumber, item.Quantity, additionalShelfInfo)
+		buffer.WriteString(fmt.Sprintf("\n%s (id=%d)\nзаказ %d, %d шт %s\n", item.ProductName, item.ProductID, item.OrderNumber, item.Quantity, additionalShelfInfo))
 	}
+
+	// Выводим буферизированный текст
+	fmt.Println(buffer.String())
 }
 
 func (sa *StringArray) Scan(value interface{}) error {
